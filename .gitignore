@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Playwright MCP
+.playwright-mcp/
+
+# Screenshots (add committed ones explicitly with git add -f)
+screenshots/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
