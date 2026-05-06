@@ -1,31 +1,37 @@
 # Claude.ai RTL Fix
 
-Tampermonkey userscript that adds RTL support to claude.ai.
+A userscript that makes Arabic and Hebrew render correctly on claude.ai.
 
-Claude has no built-in support for Arabic or Persian — text is always left-aligned with broken punctuation. This fixes that.
-
-## What it fixes
-
-- RTL text flows right-to-left, right-aligned
-- LTR text stays left-aligned
-- Mixed paragraphs — each one picks its own direction
-- Code blocks and math — always LTR
-- Tables — per-cell direction, correct column order
-- Blockquotes — border on the correct side
-- Lists — markers follow text direction (works during streaming)
-- Input box — auto-detects direction as you type
+Claude renders everything left-to-right out of the box. On Arabic content that means broken punctuation, tables flipped the wrong way, and list bullets stuck on the wrong side. This fixes it.
 
 ## Install
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/)
-2. Open `claude-rtl-fix.user.js` (or click Raw on GitHub)
-3. Tampermonkey will ask to install — click **Install**
+1. Install [Tampermonkey](https://www.tampermonkey.net/) (or any userscript manager).
+2. Open [`claude-rtl-fix.user.js`](claude-rtl-fix.user.js) and let Tampermonkey install it.
 
-Or: Tampermonkey dashboard → new script → paste contents → save.
+Updates pull from the `main` branch automatically.
 
-## How it works
+## Behavior
 
-Mostly CSS. `unicode-bidi: plaintext` handles per-paragraph direction detection. List markers use `::before` pseudo-elements so they work correctly even while Claude is streaming — no fighting with React re-renders. A `MutationObserver` sets `dir` on containers and table cells for table/blockquote layout.
+The whole message picks one direction based on its content.
+
+If it's mostly Arabic, the message goes RTL: text alignment, table column order, list bullets, blockquote bar — all on the right side. If it's mostly English, the message stays LTR.
+
+Code blocks, inline `code`, and math (KaTeX, MathJax) always render LTR, even inside an Arabic message.
+
+The chat input follows what you type natively. Start typing Arabic, it goes right-to-left; switch to English, it goes left-to-right.
+
+## How it picks direction
+
+It counts Arabic vs Latin characters in the message and takes the majority, capped at the first 2000 characters.
+
+So `API ده محتاج إيه` is detected as Arabic, even though it starts with English.
+
+## Performance
+
+Each message is scanned once. As soon as its direction is locked, the script stops watching it. No rescans during streaming, no work while you scroll, no leftover observers when virtual-scrolled messages unmount.
+
+If you don't notice the script is running, that's the goal.
 
 ## License
 

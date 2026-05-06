@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude.ai RTL Fix
 // @namespace    https://darky.dev
-// @version      1.0.0
-// @description  Fixes RTL (Arabic/Persian) text rendering on claude.ai while preserving code blocks and LaTeX math as LTR
+// @version      1.1.0
+// @description  Sets message-level direction (RTL/LTR) on claude.ai based on the message's content. Code blocks and math stay LTR; tables inherit.
 // @author       Youssef Khalil <me@darky.dev>
 // @match        https://claude.ai/*
 // @match        https://*.claude.ai/*
@@ -14,76 +14,68 @@
 // ==/UserScript==
 
 (() => {
-  const CONFIG = {
-    DEBOUNCE_MS: 150,
-    RESPONSE: ".standard-markdown",
-    USER_MSG: '[data-testid="user-message"]',
-    INPUT: '[data-testid="chat-input"], .ProseMirror',
-    PROSE: "p, h1, h2, h3, h4, h5, h6, blockquote, dt, dd, summary",
-    LTR_FORCED: [
-      "pre",
-      "code",
-      ".code-block__code",
-      '[class*="code-block"]',
-      '[class*="hljs"]',
-      ".katex",
-      ".katex-display",
-      ".katex-html",
-      ".katex-mathml",
-      ".MathJax",
-      '[role="math"]',
-    ].join(","),
-  };
+  const RESPONSE = ".standard-markdown";
+  const USER_MSG = '[data-testid="user-message"]';
+  const MSG = `${RESPONSE},${USER_MSG}`;
+  const INPUT = '[data-testid="chat-input"], .ProseMirror';
+  const LTR_FORCED = [
+    "pre",
+    "code",
+    ".code-block__code",
+    '[class*="code-block"]',
+    '[class*="hljs"]',
+    ".katex",
+    ".katex-display",
+    ".katex-html",
+    ".katex-mathml",
+    ".MathJax",
+    '[role="math"]',
+  ].join(",");
 
-  //RTL detection (scans prose only, skips code/math/tables)
-  const RTL_RE =
-    /[\u0591-\u07FF\u200F\u202B\u202E\u2067\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+  // RTL: Hebrew + Arabic + Syriac + Thaana + NKo + Arabic Extended +
+  // explicit RTL bidi controls + Arabic Presentation Forms A/B.
+  const RTL_RE = /[֑-ࣿ‏‫‮⁧יִ-﷽ﹰ-ﻼ]/;
+  // LTR: Latin + Latin Extended + Greek + Cyrillic.
+  const LTR_RE = /[A-Za-zÀ-ɏͰ-ϿЀ-ӿ]/;
 
-  const detectDir = (el) => {
-    for (const node of el.querySelectorAll(
-      "p,h1,h2,h3,h4,h5,h6,li,blockquote,dt,dd",
-    )) {
-      if (node.closest(CONFIG.LTR_FORCED)) continue;
-      for (const ch of node.textContent || "") {
-        if (RTL_RE.test(ch)) return "rtl";
-        if (/[a-zA-Z]/.test(ch)) return "ltr";
+  // Capped scan: enough for confident majority, short enough to stay cheap
+  // even on massive messages.
+  const SCAN_LIMIT = 2000;
+  const detectDir = (root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) =>
+        n.nodeValue?.trim() && !n.parentElement?.closest(LTR_FORCED)
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT,
+    });
+    let rtl = 0;
+    let ltr = 0;
+    let scanned = 0;
+    outer: for (let n; (n = walker.nextNode()); ) {
+      for (const ch of n.nodeValue) {
+        if (RTL_RE.test(ch)) rtl++;
+        else if (LTR_RE.test(ch)) ltr++;
+        if (++scanned >= SCAN_LIMIT) break outer;
       }
     }
-    for (const ch of el.textContent || "") {
-      if (RTL_RE.test(ch)) return "rtl";
-      if (/[a-zA-Z]/.test(ch)) return "ltr";
-    }
-    return "ltr";
+    if (!rtl && !ltr) return null;
+    return rtl > ltr ? "rtl" : "ltr";
   };
 
-  //CSS  //
-  // Handles everything during streaming without JS.
-  // List markers use ::before (not native markers) so they
-  // participate in unicode-bidi:plaintext flow and position
-  // correctly regardless of React re-renders.
-
   GM_addStyle(`
-    /* Text elements */
-    .standard-markdown :is(p, h1, h2, h3, h4, h5, h6, dt, dd, summary) {
-      unicode-bidi: plaintext;
-      text-align: start;
+    /* Message-level alignment — start resolves per direction. */
+    ${RESPONSE}, ${USER_MSG} { text-align: start !important; }
+
+    /* Prose spacing — logical props flip with direction. */
+    ${RESPONSE} :is(p, h1, h2, h3, h4, h5, h6, dt, dd, summary) {
       padding-left: 0 !important;
       padding-right: 0 !important;
       padding-inline-start: 0.5rem !important;
       padding-inline-end: 2rem !important;
     }
 
-    /* User messages */
-    [data-testid="user-message"],
-    [data-testid="user-message"] p {
-      unicode-bidi: plaintext;
-      text-align: start;
-    }
-
-    /* Blockquote — logical props so border flips with direction */
-    .standard-markdown blockquote {
-      unicode-bidi: plaintext;
-      text-align: start;
+    /* Blockquote — logical border + spacing. */
+    ${RESPONSE} blockquote {
       border-left: none !important;
       border-right: none !important;
       border-inline-start: 4px solid var(--border-300, #d1d5db) !important;
@@ -95,212 +87,138 @@
       padding-inline-start: 1rem !important;
       padding-inline-end: 2rem !important;
     }
-    .standard-markdown blockquote p {
+    ${RESPONSE} blockquote :is(p, h1, h2, h3, h4, h5, h6) {
       padding-inline-start: 0 !important;
       padding-inline-end: 0 !important;
     }
 
-    /* Lists — custom markers via ::before so they follow
-       unicode-bidi:plaintext and work during streaming */
-    .standard-markdown ol {
-      list-style: none !important;
-      padding-left: 0 !important;
-      padding-right: 0 !important;
-      padding-inline-start: 0.5rem !important;
-      padding-inline-end: 0 !important;
-    }
-    .standard-markdown ul {
-      list-style: none !important;
+    /* Lists — logical padding so bullets sit on the start side. */
+    ${RESPONSE} :is(ol, ul) {
       padding-left: 0 !important;
       padding-right: 0 !important;
       padding-inline-start: 1.5rem !important;
-      padding-inline-end: 0 !important;
     }
-    .standard-markdown li {
-      unicode-bidi: plaintext;
-      text-align: start;
+    ${RESPONSE} li {
       padding-left: 0 !important;
       padding-right: 0 !important;
       padding-inline-start: 0.25rem !important;
     }
-    .standard-markdown ol > li::before {
-      content: counter(list-item) ".\\00a0";
-    }
-    .standard-markdown ul > li::before {
-      content: "\\2022\\00a0\\00a0";
-    }
 
-    /* Code — always LTR */
-    .standard-markdown pre,
-    .standard-markdown code,
-    .standard-markdown .code-block__code,
-    .standard-markdown [class*="code-block"],
-    .standard-markdown [class*="hljs"] {
+    /* Code + math — isolated LTR islands. */
+    ${RESPONSE} :is(${LTR_FORCED}) {
       direction: ltr !important;
       unicode-bidi: isolate !important;
       text-align: left !important;
     }
+    ${RESPONSE} .katex-display { text-align: center !important; }
 
-    /* Math — always LTR */
-    .standard-markdown .katex-display {
-      direction: ltr !important;
-      unicode-bidi: isolate !important;
-      text-align: center !important;
-    }
-    .standard-markdown .katex,
-    .standard-markdown .katex-html,
-    .standard-markdown .katex-mathml,
-    .standard-markdown .MathJax,
-    .standard-markdown [role="math"] {
-      direction: ltr !important;
-      unicode-bidi: isolate !important;
-    }
-
-    /* Tables */
-    .standard-markdown table {
-      width: 100% !important;
-      table-layout: auto;
-    }
-    .standard-markdown thead { text-align: start !important; }
-    .standard-markdown th,
-    .standard-markdown td {
-      text-align: start;
+    /* Tables — explicitly follow message direction. */
+    ${RESPONSE} table { width: 100% !important; table-layout: auto; }
+    ${RESPONSE}[dir="rtl"] table, ${USER_MSG}[dir="rtl"] table { direction: rtl !important; }
+    ${RESPONSE}[dir="ltr"] table, ${USER_MSG}[dir="ltr"] table { direction: ltr !important; }
+    ${RESPONSE} :is(th, td) {
+      text-align: start !important;
       padding: 0.5rem 1rem !important;
     }
 
-    /* Input */
-    .ProseMirror,
-    [data-testid="chat-input"],
-    [contenteditable="true"] { unicode-bidi: plaintext; }
-    .ProseMirror p,
-    [data-testid="chat-input"] p {
+    /* Input — let the editor follow what the user types. */
+    ${INPUT}, [contenteditable="true"] { unicode-bidi: plaintext; }
+    ${INPUT.split(",").map((s) => `${s.trim()} p`).join(",")} {
       unicode-bidi: plaintext;
       text-align: start;
     }
   `);
 
-  //DOM processor (debounced)  // Sets dir on containers, table cells, blockquotes.
-  // Lists don't need JS — CSS ::before handles them.
+  // Once a message is locked, its observer is disconnected and we never
+  // touch it again — old messages cost zero CPU regardless of conversation
+  // length.
+  const detected = new WeakSet();
+  const pending = new WeakSet();
+  const observers = new WeakMap();
 
-  const seen = new WeakSet();
+  const idle =
+    typeof requestIdleCallback === "function"
+      ? (fn) => requestIdleCallback(fn, { timeout: 2000 })
+      : (fn) => setTimeout(fn, 50);
 
-  const processContainer = (el) => {
-    el.setAttribute("dir", detectDir(el));
-
-    el.querySelectorAll(CONFIG.PROSE).forEach((node) => {
-      if (!node.closest(CONFIG.LTR_FORCED)) node.setAttribute("dir", "auto");
-    });
-
-    el.querySelectorAll(CONFIG.LTR_FORCED).forEach((node) => {
-      node.setAttribute("dir", "ltr");
-    });
-
-    el.querySelectorAll("th, td").forEach((cell) => {
-      let rtl = false,
-        latin = false;
-      for (const ch of cell.textContent || "") {
-        if (RTL_RE.test(ch)) {
-          rtl = true;
-          break;
-        }
-        if (/[a-zA-Z]/.test(ch)) {
-          latin = true;
-          break;
-        }
-      }
-      if (rtl) cell.setAttribute("dir", "rtl");
-      else if (latin) cell.setAttribute("dir", "ltr");
-      else cell.removeAttribute("dir");
-    });
+  const lockDir = (msg) => {
+    pending.delete(msg);
+    if (detected.has(msg) || !msg.isConnected) return;
+    const dir = detectDir(msg);
+    if (!dir) return; // not enough text yet — observer will retry on next mutation
+    if (msg.getAttribute("dir") !== dir) msg.setAttribute("dir", dir);
+    detected.add(msg);
+    observers.get(msg)?.disconnect();
+    observers.delete(msg);
   };
 
-  const processAll = () => {
-    document.querySelectorAll(CONFIG.RESPONSE).forEach(processContainer);
-    document.querySelectorAll(CONFIG.USER_MSG).forEach((msg) => {
-      msg.setAttribute("dir", detectDir(msg));
-      msg.querySelectorAll("p").forEach((p) => {
-        p.setAttribute("dir", "auto");
-      });
-    });
-    for (const input of document.querySelectorAll(CONFIG.INPUT)) {
-      if (seen.has(input)) continue;
-      input.setAttribute("dir", "auto");
-      seen.add(input);
+  // Coalesce mutation bursts: only one idle callback in flight per message.
+  const schedule = (msg) => {
+    if (detected.has(msg) || pending.has(msg)) return;
+    pending.add(msg);
+    idle(() => lockDir(msg));
+  };
+
+  const watchMessage = (msg) => {
+    if (detected.has(msg) || observers.has(msg)) return;
+    // Native dir="auto" gives the browser its instant first-strong direction
+    // — the user sees correct alignment before our majority detection runs.
+    if (!msg.hasAttribute("dir")) msg.setAttribute("dir", "auto");
+    schedule(msg);
+    const obs = new MutationObserver(() => schedule(msg));
+    obs.observe(msg, { childList: true, subtree: true, characterData: true });
+    observers.set(msg, obs);
+  };
+
+  // Releases the observer's strong reference so the detached DOM node can
+  // be garbage collected — critical for virtual-scrolled conversations.
+  const releaseMessage = (msg) => {
+    observers.get(msg)?.disconnect();
+    observers.delete(msg);
+  };
+
+  const seedInputs = () => {
+    for (const el of document.querySelectorAll(INPUT)) {
+      if (el.getAttribute("dir") !== "auto") el.setAttribute("dir", "auto");
     }
   };
 
-  //Mutation observer
-  let timer = null;
-  const schedule = () => {
-    clearTimeout(timer);
-    timer = setTimeout(processAll, CONFIG.DEBOUNCE_MS);
+  const seedAll = () => {
+    document.querySelectorAll(MSG).forEach(watchMessage);
+    seedInputs();
   };
 
+  // Body-level observer watches childList only (not characterData) — fires
+  // when messages appear or disappear, ignores text typing/streaming entirely.
+  // Releasing observers on removal is what keeps memory flat under virtual
+  // scrolling: detached nodes can be GC'd because no per-message observer
+  // is still holding them.
   new MutationObserver((mutations) => {
     for (const m of mutations) {
-      if (m.type === "childList") {
-        for (const node of m.addedNodes) {
-          if (node.nodeType !== Node.ELEMENT_NODE) {
-            if (
-              node.nodeType === Node.TEXT_NODE &&
-              node.parentElement?.closest?.(
-                `${CONFIG.RESPONSE},${CONFIG.USER_MSG}`,
-              )
-            ) {
-              schedule();
-              return;
-            }
-            continue;
-          }
-          if (
-            node.matches?.(CONFIG.RESPONSE) ||
-            node.matches?.(CONFIG.USER_MSG) ||
-            node.querySelector?.(`${CONFIG.RESPONSE},${CONFIG.USER_MSG}`) ||
-            node.matches?.("p,li,h1,h2,h3,h4,h5,h6,pre,.katex-display,table") ||
-            node.querySelector?.("pre,.katex-display,table")
-          ) {
-            schedule();
-            return;
-          }
-        }
+      for (const node of m.removedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (node.matches?.(MSG)) releaseMessage(node);
+        node.querySelectorAll?.(MSG).forEach(releaseMessage);
       }
-      if (
-        m.type === "characterData" &&
-        m.target.parentElement?.closest?.(
-          `${CONFIG.RESPONSE},${CONFIG.USER_MSG}`,
-        )
-      ) {
-        schedule();
-        return;
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (node.matches?.(MSG)) watchMessage(node);
+        node.querySelectorAll?.(MSG).forEach(watchMessage);
       }
     }
-  }).observe(document.body, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-  });
+  }).observe(document.body, { childList: true, subtree: true });
 
-  //SPA navigation
-  let url = location.href;
-  const onNav = () => {
-    if (location.href !== url) {
-      url = location.href;
-      setTimeout(processAll, 500);
-    }
-  };
+  // SPA navigation — re-seed any messages that appeared during the route swap.
+  const onNav = () => idle(seedAll);
+  window.addEventListener("popstate", onNav);
+  for (const method of ["pushState", "replaceState"]) {
+    const orig = history[method];
+    history[method] = function (...args) {
+      orig.apply(this, args);
+      onNav();
+    };
+  }
 
-  window.addEventListener("popstate", () => setTimeout(processAll, 300));
-  const _push = history.pushState;
-  const _replace = history.replaceState;
-  history.pushState = function (...a) {
-    _push.apply(this, a);
-    onNav();
-  };
-  history.replaceState = function (...a) {
-    _replace.apply(this, a);
-    onNav();
-  };
-
-  //Init  processAll();
-  setTimeout(processAll, 1000);
+  idle(seedAll);
+  setTimeout(seedAll, 1000);
 })();
